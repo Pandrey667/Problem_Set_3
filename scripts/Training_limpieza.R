@@ -600,3 +600,257 @@ train_match2 <- train_match2 %>%
   select(-bathrooms_num, -bathrooms_int, -num_left, -has_bath_word)
 
 
+
+
+# =============================================================================
+# 20. CÁLCULO DE PRECIO POR METRO CUADRADO
+# =============================================================================
+# Calculamos precio por m2 y en millones
+train_match2 <- train_match2 %>% 
+  mutate(precio_mt2 = round(price/area_m2),
+         precio_mt2_mill = precio_mt2/1000000)
+
+# Guardamos en train2
+train2 <- train_match2
+
+# =============================================================================
+# 21. CREACIÓN DE VARIABLES DERIVADAS DEL TIPO DE PROPIEDAD
+# =============================================================================
+# Función para limpiar textos
+clean_txt <- function(str){
+  str_squish(str_to_lower(
+    stringi::stri_trans_general(
+      str_replace_all(str, '[^[:alnum:]]', " "), 'Latin-ASCII'))
+  )
+}
+
+# Creamos variable property_type2 desde descripción
+train2 <- train2 %>% 
+  mutate(description_c = clean_txt(description),
+         property_type2 = case_when(
+           grepl("\\bcasa\\b", description_c) ~ "Casa",
+           grepl("\\bapto|apartamento", description_c) ~ "Apartamento",
+           TRUE ~ NA_character_
+         ))
+
+# Verificamos valores faltantes
+sum(is.na(train2$property_type2))
+
+# Imputamos moda para valores faltantes
+moda <- train2 %>%
+  filter(!is.na(property_type2)) %>%
+  count(property_type2) %>%
+  arrange(desc(n)) %>%
+  slice(1) %>%
+  pull(property_type2)
+
+train2 <- train2 %>%
+  mutate(property_type2 = if_else(is.na(property_type2), moda, property_type2))
+
+# Creamos dummies para Casa y Apartamento (excluyendo apartaestudios)
+train2 <- train2 %>%
+  mutate(
+    dummy_casa = if_else(property_type2 == "Casa" & dummy_apartaestudio != 1, 1L, 0L),
+    dummy_apartamento = if_else(property_type2 == "Apartamento" & dummy_apartaestudio != 1, 1L, 0L)
+  )
+
+# =============================================================================
+# 22. EXTRACCIÓN DE NÚMERO DE PISOS (PARA CASAS)
+# =============================================================================
+# Diccionario de números escritos
+numeros_escritos <- c("dos", "tres", "cuatro", "cinco", "seis", "siete", 
+                      "ocho", "nueve", "diez")
+numeros_numericos <- as.character(2:10)
+
+# Extraemos y procesamos número de pisos
+train2 <- train2 %>%
+  mutate(n_pisos = str_extract(description, "(\\b\\w{3,6}|\\d+) pisos")) %>%
+  mutate(n_pisos = ifelse(property_type2 == "Casa", n_pisos, NA)) %>% 
+  mutate(n_pisos = str_replace_all(n_pisos, setNames(numeros_numericos, numeros_escritos))) %>%
+  mutate(n_pisos_num = as.integer(stri_extract_first(n_pisos, regex = "\\d+"))) %>% 
+  mutate(n_pisos_num = case_when(
+    is.na(n_pisos_num) ~ 1L,
+    .default = n_pisos_num)) %>%
+  mutate(n_pisos_num = if_else(n_pisos_num > 10, 1L, n_pisos_num))
+
+# Imputamos 1 piso para casas sin información
+train2 <- train2 %>%
+  mutate(n_pisos_num = case_when(
+    property_type2 == "Casa" & is.na(n_pisos_num) ~ 1L,
+    property_type2 == "Casa" ~ n_pisos_num,
+    TRUE ~ NA_integer_
+  ))
+
+# =============================================================================
+# 23. EXTRACCIÓN DE PISO DEL APARTAMENTO
+# =============================================================================
+# Diccionario de números ordinales escritos
+numeros_escritos <- c("uno|primero|primer", "dos|segundo|segund", 
+                      "tres|tercero|tercer", "cuatro|cuarto", "cinco|quinto", 
+                      "seis|sexto", "siete|septimo", "ocho|octavo", 
+                      "nueve|noveno", "diez|decimo|dei")
+numeros_num <- as.character(1:10)
+
+# Extraemos y procesamos número de piso
+train2 <- train2 %>%
+  mutate(piso_info = str_extract(description, "(\\b\\w+|\\d+) piso (\\w+|\\d+)")) %>% 
+  mutate(mts_info_bool = grepl(pattern = "\\d+(?=m[ts2]+)", piso_info, perl = TRUE)) %>% 
+  mutate(piso_info = str_replace_all(piso_info, setNames(numeros_num, numeros_escritos))) %>% 
+  mutate(piso_numerico = as.integer(stri_extract_first(piso_info, regex = "\\d+"))) %>% 
+  mutate(piso_numerico = ifelse(piso_numerico > 66, NA, piso_numerico)) %>%
+  mutate(piso_numerico = ifelse(property_type2 == "Casa", 1, piso_numerico))
+
+# Imputamos 1 para valores faltantes
+train2 <- train2 %>%
+  mutate(piso_numerico = replace_na(piso_numerico, 1))
+
+# Aseguramos que apartamentos tengan valor
+train2 <- train2 %>%
+  mutate(piso_numerico = case_when(
+    property_type2 == "Apartamento" & is.na(piso_numerico) ~ 1L,
+    property_type2 == "Apartamento" ~ piso_numerico,
+    TRUE ~ NA_integer_
+  ))
+
+# =============================================================================
+# 24. ANÁLISIS ESPACIAL: PREPARACIÓN DE DATOS GEOGRÁFICOS
+# =============================================================================
+# Calculamos centro geográfico de la ciudad
+latitud_central <- mean(train2$lat, na.rm = TRUE)
+longitud_central <- mean(train2$lon, na.rm = TRUE)
+
+# Filtramos observaciones con coordenadas válidas
+train2_clean <- train2 %>%
+  filter(!is.na(lon) & !is.na(lat))
+
+# Eliminamos duplicados de coordenadas
+#train2_clean <- train2_clean %>% distinct(lon, lat, .keep_all = TRUE)
+
+# Convertimos a objeto sf (espacial) en sistema WGS84
+sf_train2 <- st_as_sf(train2_clean, 
+                      coords = c('lon', 'lat'), 
+                      crs = 4626, 
+                      remove = FALSE)
+
+# =============================================================================
+# 25. CARGA DE CAPA DE LOCALIDADES
+# =============================================================================
+# Cargamos geometrías de localidades de Bogotá
+loca <- st_read("GPKG_MR_V1223.gpkg", 
+                layer = 'Loca')
+
+cat("Localidades cargadas:", nrow(loca), "\n")
+print(st_crs(loca))
+
+# Transformamos ambas capas al mismo sistema de coordenadas
+sf_train2 <- st_transform(sf_train2, crs = 4626)
+loca <- st_transform(loca, crs = 4626)
+
+# =============================================================================
+# 26. VISUALIZACIÓN DE DISTRIBUCIÓN ESPACIAL
+# =============================================================================
+# Visualizamos distribución de propiedades en la ciudad
+ggplot() +
+  geom_sf(data = loca, mapping = aes(fill = LocNombre), show.legend = TRUE) +
+  geom_sf(data = sf_train2, colour = alpha('red', 0.4), size = 0.5) +
+  coord_sf() +
+  theme_minimal()
+
+# =============================================================================
+# 27. JOIN CON ARCHIVO DE LOCALIDADES
+# =============================================================================
+# Realizamos join espacial para asignar localidad a cada propiedad
+sf_train2 <- st_join(x = sf_train2,
+                     y = loca,
+                     join = st_intersects)
+
+cat("Observaciones después del spatial join:", nrow(sf_train2), "\n")
+
+# Verificamos distribución por localidad
+table(sf_train2$LocNombre, useNA = "ifany")
+
+# Creamos variable para identificar Chapinero por ser de interes 
+sf_train2 <- sf_train2 %>% 
+  mutate(is_chapinero = if_else(LocCodigo == "02", "Chapinero", "Otra localidad", 
+                                missing = "Sin localidad"))
+
+# Visualizamos Chapinero específicamente de manera preliminar aunque se entrenara con toda Bogotá
+ggplot() +
+  geom_sf(data = loca %>% filter(LocCodigo %in% c('01', '02', '03'))) +
+  geom_sf(data = sf_train2 %>% filter(!is.na(LocCodigo)), 
+          mapping = aes(color = is_chapinero), size = 0.5, show.legend = TRUE) +
+  scale_color_manual(values = c("Chapinero" = "black", "Otra localidad" = "blue")) +
+  theme_bw() +
+  labs(color = 'Localidad', title = 'Distribución de propiedades por localidad') +
+  theme(legend.position = 'top', legend.direction = 'horizontal')
+
+# =============================================================================
+# 28. EXTRACCIÓN Y PROCESAMIENTO DE PARQUES
+# =============================================================================
+# Descargamos geometría de parques desde OpenStreetMap
+parques <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "leisure", value = "park") 
+
+parques_sf <- osmdata_sf(parques)
+
+# Extraemos polígonos de parques
+parques_geometria <- parques_sf$osm_polygons %>% 
+  dplyr::select(osm_id, name) %>%
+  st_transform(crs = 4626)
+
+# Validamos geometrías
+parques_validos <- parques_geometria[st_is_valid(parques_geometria), ]
+parques_validos <- parques_validos[st_geometry_type(parques_validos) %in% c("POLYGON", "MULTIPOLYGON"), ]
+
+# Calculamos centroides de parques
+centroides <- st_centroid(parques_validos)
+
+# Visualización los parques del sector solo como medida de confirmación. Este paso no se repetira con los otros puntos de referencia 
+centroides_wgs84 <- st_transform(centroides, crs = 4626)
+parques_wgs84 <- st_transform(parques_geometria, crs = 4626)
+
+leaflet() %>%
+  addTiles() %>%
+  setView(lng = longitud_central, lat = latitud_central, zoom = 12) %>%
+  addPolygons(data = parques_wgs84, col = "red", weight = 10,
+              opacity = 0.8, popup = parques_wgs84$name) %>%
+  addCircles(data = centroides_wgs84,
+             col = "darkblue", opacity = 0.5, radius = 1)
+
+# Calculamos distancia mínima a parques
+dist_matrix <- st_distance(x = sf_train2, y = centroides)
+dist_min <- apply(dist_matrix, 1, min)  
+sf_train2 <- sf_train2 %>% mutate(distancia_parque = dist_min)
+
+# Calculamos área del parque más cercano
+posicion <- apply(dist_matrix, 1, which.min)
+areas <- st_area(parques_validos)
+area_parque_vecina <- as.numeric(areas[posicion])
+
+# Añadimos área del parque a la base
+sf_train2 <- sf_train2 %>%
+  mutate(area_parque = area_parque_vecina)
+
+# =============================================================================
+# 29. EXTRACCIÓN Y PROCESAMIENTO DE GIMNASIOS
+# =============================================================================
+# Descargamos gimnasios desde OSM
+gym <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "leisure", value = "fitness_centre") 
+
+gym_sf <- osmdata_sf(gym)
+
+gym_geometria <- gym_sf$osm_polygons %>% 
+  dplyr::select(osm_id, name) %>% 
+  st_transform(crs = 4626)
+
+gym_validos <- gym_geometria[st_is_valid(gym_geometria), ]
+gym_validos <- gym_validos[st_geometry_type(gym_validos) %in% c("POLYGON", "MULTIPOLYGON"), ]
+
+centroides_gym <- st_centroid(gym_validos)
+
+# Calculamos distancia a gimnasios
+dist_matrix <- st_distance(x = sf_train2, y = centroides_gym)
+dist_min <- apply(dist_matrix, 1, min)
+sf_train2 <- sf_train2 %>% mutate(distancia_gimnasio = dist_min)
+
