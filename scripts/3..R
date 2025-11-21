@@ -334,3 +334,118 @@ write_csv(resultado_gbm, "gbm_prediction.csv")
 
 file.info("gbm_prediction.csv")$mtime
 getwd()
+
+
+# -----------  SUPER LEARNER   -------------
+
+# Para que no colapse memoria RAM 
+options(mc.cores = 1)
+
+# también aseguramos que no queden clusters activos
+stopImplicitCluster()
+
+# Ajustes livianos para los modelos base
+options(SL.ranger.num.trees = 300)
+options(SL.gbm.trees = 100)
+options(SL.gbm.interaction.depth = 2)
+options(SL.gbm.shrinkage = 0.01)
+
+# Activar mensajes para ver avance
+options(SL.verbose = TRUE)
+
+
+# Definimos nuestro vector objetivo a partir del dataset reducido.
+# Este dataset ya pasó por limpieza: eliminación de niveles únicos, variables
+# con demasiados niveles y toda la imputación numérica y categórica.
+
+ySL <- train_reduced$price
+
+# Construimos XSL, el conjunto de predictores que vamos a usar en el SuperLearner.
+# Seleccionamos un subconjunto razonable de variables relevantes
+
+XSL <- train_reduced %>% select(
+  bedrooms, banos_tot, area_m2,
+  distancia_parque, distancia_supermercado,
+  distancia_avenida_principal, distancia_universidad,
+  dummy_casa, dummy_apartamento, dummy_apartaestudio,
+  int_homicidio_casa, int_hurto_casa,
+  int_var_homicidio_casa, int_var_hurto_casa
+)
+
+
+# Definimos la librería de modelos base
+
+sl.lib <- c(
+  "SL.mean",
+  "SL.lm",
+  "SL.glm",
+  "SL.ridge",
+  "SL.glmnet",
+  "SL.ranger",
+  "SL.gbm"
+)
+
+
+
+# Establecemos la forma en que el SuperLearner va a evaluar
+
+set.seed(1453)
+
+fitSL <- SuperLearner(
+  Y = ySL,
+  X = as.data.frame(XSL),
+  SL.library = sl.lib,
+  method = "method.NNLS",
+  cvControl = list(V = 3)
+)
+
+# Predicción sobre el conjunto "test_reduced"
+
+
+X_test_SL <- test_reduced %>% select(
+  bedrooms, banos_tot, area_m2,
+  distancia_parque, distancia_supermercado,
+  distancia_avenida_principal, distancia_universidad,
+  dummy_casa, dummy_apartamento, dummy_apartaestudio,
+  int_homicidio_casa, int_hurto_casa,
+  int_var_homicidio_casa, int_var_hurto_casa
+)
+
+# Generamos las predicciones del SuperLearner en el conjunto de prueba.
+
+pred_test_SL <- predict(fitSL, X_test_SL, onlySL = TRUE)$pred
+
+# Calculamos el error medio absoluto.
+
+MAE_test_SL <- mean(abs(test_reduced$price - pred_test_SL))
+MAE_test_SL
+
+
+# Predicción final sobre el testeo para enviar a Kaggle
+
+X_testeo_SL <- testeo %>% select(
+  bedrooms, banos_tot, area_m2,
+  distancia_parque, distancia_supermercado,
+  distancia_avenida_principal, distancia_universidad,
+  dummy_casa, dummy_apartamento, dummy_apartaestudio,
+  int_homicidio_casa, int_hurto_casa,
+  int_var_homicidio_casa, int_var_hurto_casa
+)
+
+# Predicción final con SL para el archivo de Kaggle
+
+pred_testeo_SL <- predict(fitSL, newdata = X_testeo_SL, onlySL = TRUE)$pred
+pred_testeo_SL_round <- round(pred_testeo_SL, -3)
+
+
+# Armamos el archivo final para entregar en Kaggle
+
+resultado_SL <- df_def_testeo %>%
+  select(property_id) %>%
+  mutate(price = pred_testeo_SL_round)
+
+write.csv(resultado_SL, "superlearner_prediction.csv", row.names = FALSE)
+
+file.info("superlearner_prediction.csv")$mtime
+getwd()
+
