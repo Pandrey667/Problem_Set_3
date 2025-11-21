@@ -157,3 +157,180 @@ write_csv(resultado, "rf_prediction.csv")
 file.info("rf_prediction.csv")$mtime
 getwd()
 
+
+# ----------- GBM -------------
+
+# Convertimos variables tipo character en factores
+# Esto es necesario para que GBM y SuperLearner puedan trabajar correctamente
+train <- train %>% mutate(across(where(is.character), as.factor))
+test  <- test  %>% mutate(across(where(is.character), as.factor))
+testeo <- testeo %>% mutate(across(where(is.character), as.factor))
+
+
+# Eliminamos factores que solo tienen un nivel (no aportan variabilidad)
+
+one_level_factors <- names(Filter(function(x) is.factor(x) && length(unique(x)) < 2, train))
+one_level_factors
+
+train_clean <- train %>% select(-all_of(one_level_factors))
+test_clean <- test %>% select(-all_of(one_level_factors))
+
+# Lo mismo para testeo
+one_level_factors <- names(Filter(function(x) is.factor(x) && length(unique(x)) < 2, train))
+testeo <- testeo %>% select(-all_of(one_level_factors))
+
+# Identificamos variables categóricas con demasiados niveles
+# para evitar explosión de memoria al entrenar GBM
+
+sapply(train_clean, function(x) length(unique(x)))
+
+
+high_cardinality <- names(which(
+  sapply(train_clean, function(x) !is.numeric(x) && length(unique(x)) > 100)
+))
+high_cardinality
+
+# Eliminamos las variables de alta cardinalidad
+
+train_reduced <- train_clean %>% select(-all_of(high_cardinality))
+test_reduced  <- test_clean  %>% select(-all_of(high_cardinality))
+testeo <- testeo %>% select(-all_of(high_cardinality))
+
+# Reconfiguramos paralelización
+
+cl <- makeCluster(parallel::detectCores() - 1)
+registerDoParallel(cl)
+
+getDoParWorkers()
+getDoParName()
+
+# Imputamos valores faltantes en variables numéricas del train
+
+num_vars <- names(Filter(is.numeric, train_reduced))
+
+for (v in num_vars) {
+  med <- median(train_reduced[[v]], na.rm = TRUE)
+  train_reduced[[v]][is.na(train_reduced[[v]])] <- med
+}
+
+# Imputamos valores faltantes en variables categóricas del train
+
+fac_vars <- names(Filter(is.factor, train_reduced))
+
+for (v in fac_vars) {
+  mode_v <- names(sort(table(train_reduced[[v]]), decreasing = TRUE))[1]
+  train_reduced[[v]][is.na(train_reduced[[v]])] <- mode_v
+}
+
+# Verificamos que no queden NA
+sum(is.na(train_reduced))
+
+
+# Imputamos NA en test_reduced y testeo usando valores del train
+
+for (v in num_vars) {
+  med <- median(train_reduced[[v]], na.rm = TRUE)
+  test_reduced[[v]][is.na(test_reduced[[v]])] <- med
+  testeo[[v]][is.na(testeo[[v]])] <- med
+}
+
+for (v in fac_vars) {
+  mode_v <- names(sort(table(train_reduced[[v]]), decreasing = TRUE))[1]
+  test_reduced[[v]][is.na(test_reduced[[v]])] <- mode_v
+  testeo[[v]][is.na(testeo[[v]])] <- mode_v
+}
+
+
+
+
+# Configuramos la grilla de hiperparámetros para GBM
+
+grid_gbm <- expand.grid(
+  n.trees = c(300, 600, 1000),
+  interaction.depth = c(3, 5),
+  shrinkage = c(0.01, 0.005),
+  n.minobsinnode = c(10, 20)
+)
+
+# Configuramos validación cruzada con paralelización
+
+ctrl_gbm <- trainControl(
+  method = "cv",
+  number = 5,
+  verboseIter = TRUE,
+  allowParallel = TRUE   # <--- CLAVE
+)
+
+# Entrenamos el modelo GBM optimizando MAE
+
+set.seed(1453)
+
+gbm_opt <- train(
+  price ~ .,
+  data = train_reduced,
+  method = "gbm",
+  trControl = ctrl_gbm,
+  tuneGrid = grid_gbm,
+  metric = "MAE",
+  distribution = "gaussian",
+  verbose = FALSE
+)
+
+# Igualamos niveles de factores entre train, test y testeo
+
+for (v in names(Filter(is.factor, train_reduced))) {
+  test_reduced[[v]] <- factor(test_reduced[[v]], levels = levels(train_reduced[[v]]))
+  testeo[[v]] <- factor(testeo[[v]], levels = levels(train_reduced[[v]]))
+}
+
+# Predicciones en train y test
+
+pred_train_gbm <- predict(gbm_opt, train_reduced)
+pred_test_gbm  <- predict(gbm_opt, test_reduced)
+
+# Métricas de error
+
+MAE_train_gbm <- mean(abs(train_reduced$price - pred_train_gbm))
+MAE_test_gbm  <- mean(abs(test_reduced$price - pred_test_gbm))
+
+MAE_train_gbm
+MAE_test_gbm
+
+# Predicción final para Kaggle
+
+pred_testeo_gbm <- predict(gbm_opt, testeo)
+pred_testeo_gbm_round <- round(pred_testeo_gbm, -3)
+
+# Revisamos que testeo tenga todas las filas y detectamos filas incompleta
+
+nrow(testeo)           
+length(pred_testeo_gbm)   
+rows_with_NA <- which(!complete.cases(testeo))
+rows_with_NA
+
+# Reimputamos NA generados en testeo después de igualar niveles
+
+for (v in num_vars) {
+  med <- median(train_reduced[[v]], na.rm = TRUE)
+  testeo[[v]][is.na(testeo[[v]])] <- med
+}
+
+for (v in fac_vars) {
+  mode_v <- names(sort(table(train_reduced[[v]]), decreasing = TRUE))[1]
+  testeo[[v]][is.na(testeo[[v]])] <- mode_v
+}
+
+
+pred_testeo_gbm <- predict(gbm_opt, testeo)
+pred_testeo_gbm_round <- round(pred_testeo_gbm, -3)
+
+resultado_gbm <- df_def_testeo %>%
+  select(property_id) %>%
+  mutate(price = pred_testeo_gbm_round)
+
+write_csv(resultado_gbm, "gbm_prediction.csv")
+
+# Información de archivo generado
+
+file.info("gbm_prediction.csv")$mtime
+getwd()
