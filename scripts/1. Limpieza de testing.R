@@ -701,3 +701,423 @@ test2 <- test2 %>%
     property_type2 == "Apartamento" ~ piso_numerico,
     TRUE ~ NA_integer_
   ))
+
+# =============================================================================
+# 24. ANÁLISIS ESPACIAL: PREPARACIÓN DE DATOS GEOGRÁFICOS
+# =============================================================================
+# Calculamos centro geográfico de la ciudad
+latitud_central <- mean(test2$lat, na.rm = TRUE)
+longitud_central <- mean(test2$lon, na.rm = TRUE)
+
+# Filtramos observaciones con coordenadas válidas
+test2_clean <- test2 %>%
+  filter(!is.na(lon) & !is.na(lat))
+
+# Eliminamos duplicados de coordenadas
+#test2_clean <- test2_clean %>% distinct(lon, lat, .keep_all = TRUE)
+
+# Convertimos a objeto sf (espacial) en sistema WGS84
+sf_test2 <- st_as_sf(test2_clean, 
+                     coords = c('lon', 'lat'), 
+                     crs = 4626, 
+                     remove = FALSE)
+
+# =============================================================================
+# 25. CARGA DE CAPA DE LOCALIDADES
+# =============================================================================
+# Cargamos geometrías de localidades de Bogotá
+loca <- st_read("GPKG_MR_V1223.gpkg", 
+                layer = 'Loca')
+
+cat("Localidades cargadas:", nrow(loca), "\n")
+print(st_crs(loca))
+
+# Transformamos ambas capas al mismo sistema de coordenadas
+sf_test2 <- st_transform(sf_test2, crs = 4626)
+loca <- st_transform(loca, crs = 4626)
+
+# =============================================================================
+# 26. VISUALIZACIÓN DE DISTRIBUCIÓN ESPACIAL
+# =============================================================================
+# Visualizamos distribución de propiedades en la ciudad
+ggplot() +
+  geom_sf(data = loca, mapping = aes(fill = LocNombre), show.legend = TRUE) +
+  geom_sf(data = sf_test2, colour = alpha('red', 0.4), size = 0.5) +
+  coord_sf() +
+  theme_minimal()
+
+# =============================================================================
+# 27. JOIN CON ARCHIVO DE LOCALIDADES
+# =============================================================================
+# Realizamos join espacial para asignar localidad a cada propiedad
+sf_test2 <- st_join(x = sf_test2,
+                    y = loca,
+                    join = st_intersects)
+
+cat("Observaciones después del spatial join:", nrow(sf_test2), "\n")
+
+# Verificamos distribución por localidad
+table(sf_test2$LocNombre, useNA = "ifany")
+
+# Creamos variable para identificar Chapinero por ser de interes 
+sf_test2 <- sf_test2 %>% 
+  mutate(is_chapinero = if_else(LocCodigo == "02", "Chapinero", "Otra localidad", 
+                                missing = "Sin localidad"))
+
+# Visualizamos Chapinero específicamente de manera preliminar aunque se entrenara con toda Bogotá
+ggplot() +
+  geom_sf(data = loca %>% filter(LocCodigo %in% c('01', '02', '03'))) +
+  geom_sf(data = sf_test2 %>% filter(!is.na(LocCodigo)), 
+          mapping = aes(color = is_chapinero), size = 0.5, show.legend = TRUE) +
+  scale_color_manual(values = c("Chapinero" = "black", "Otra localidad" = "blue")) +
+  theme_bw() +
+  labs(color = 'Localidad', title = 'Distribución de propiedades por localidad') +
+  theme(legend.position = 'top', legend.direction = 'horizontal')
+
+# =============================================================================
+# 28. EXTRACCIÓN Y PROCESAMIENTO DE PARQUES
+# =============================================================================
+# Descargamos geometría de parques desde OpenStreetMap
+parques <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "leisure", value = "park") 
+
+parques_sf <- osmdata_sf(parques)
+
+# Extraemos polígonos de parques
+parques_geometria <- parques_sf$osm_polygons %>% 
+  dplyr::select(osm_id, name) %>%
+  st_transform(crs = 4626)
+
+# Validamos geometrías
+parques_validos <- parques_geometria[st_is_valid(parques_geometria), ]
+parques_validos <- parques_validos[st_geometry_type(parques_validos) %in% c("POLYGON", "MULTIPOLYGON"), ]
+
+# Calculamos centroides de parques
+centroides <- st_centroid(parques_validos)
+
+# Visualización los parques del sector solo como medida de confirmación. Este paso no se repetira con los otros puntos de referencia 
+centroides_wgs84 <- st_transform(centroides, crs = 4626)
+parques_wgs84 <- st_transform(parques_geometria, crs = 4626)
+
+leaflet() %>%
+  addTiles() %>%
+  setView(lng = longitud_central, lat = latitud_central, zoom = 12) %>%
+  addPolygons(data = parques_wgs84, col = "red", weight = 10,
+              opacity = 0.8, popup = parques_wgs84$name) %>%
+  addCircles(data = centroides_wgs84,
+             col = "darkblue", opacity = 0.5, radius = 1)
+
+# Calculamos distancia mínima a parques
+dist_matrix <- st_distance(x = sf_test2, y = centroides)
+dist_min <- apply(dist_matrix, 1, min)  
+sf_test2 <- sf_test2 %>% mutate(distancia_parque = dist_min)
+
+# Calculamos área del parque más cercano
+posicion <- apply(dist_matrix, 1, which.min)
+areas <- st_area(parques_validos)
+area_parque_vecina <- as.numeric(areas[posicion])
+
+# Añadimos área del parque a la base
+sf_test2 <- sf_test2 %>%
+  mutate(area_parque = area_parque_vecina)
+
+# =============================================================================
+# 29. EXTRACCIÓN Y PROCESAMIENTO DE GIMNASIOS
+# =============================================================================
+# Descargamos gimnasios desde OSM
+gym <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "leisure", value = "fitness_centre") 
+
+gym_sf <- osmdata_sf(gym)
+
+gym_geometria <- gym_sf$osm_polygons %>% 
+  dplyr::select(osm_id, name) %>% 
+  st_transform(crs = 4626)
+
+gym_validos <- gym_geometria[st_is_valid(gym_geometria), ]
+gym_validos <- gym_validos[st_geometry_type(gym_validos) %in% c("POLYGON", "MULTIPOLYGON"), ]
+
+centroides_gym <- st_centroid(gym_validos)
+
+# Calculamos distancia a gimnasios
+dist_matrix <- st_distance(x = sf_test2, y = centroides_gym)
+dist_min <- apply(dist_matrix, 1, min)
+sf_test2 <- sf_test2 %>% mutate(distancia_gimnasio = dist_min)
+
+# =============================================================================
+# 30. EXTRACCIÓN Y PROCESAMIENTO DE HOSPITALES
+# =============================================================================
+# Descargamos hospitales desde OSM
+hospitales <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "amenity", value = "hospital")
+hospitales_sf <- osmdata_sf(hospitales)
+
+hospitales_geometria <- hospitales_sf$osm_polygons %>% 
+  dplyr::select(osm_id, name) %>% 
+  st_transform(crs = 4626)
+
+hospitales_validos <- hospitales_geometria[st_is_valid(hospitales_geometria), ]
+hospitales_validos <- hospitales_validos[st_geometry_type(hospitales_validos) %in% c("POLYGON", "MULTIPOLYGON"), ]
+
+centroides_hospital <- st_centroid(hospitales_validos)
+
+# Calculamos distancia a hospitales
+dist_matrix <- st_distance(x = sf_test2, y = centroides_hospital)
+dist_min <- apply(dist_matrix, 1, min)
+sf_test2 <- sf_test2 %>% mutate(distancia_hospital = dist_min)
+
+# =============================================================================
+# 31. EXTRACCIÓN Y PROCESAMIENTO DE COLEGIOS
+# =============================================================================
+# Descargamos colegios desde OSM
+colegios <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "amenity", value = "school")
+colegios_sf <- osmdata_sf(colegios)
+
+colegios_geometria <- colegios_sf$osm_polygons %>% 
+  dplyr::select(osm_id, name) %>% 
+  st_transform(crs = 4626)
+
+colegios_validos <- colegios_geometria[st_is_valid(colegios_geometria), ]
+colegios_validos <- colegios_validos[st_geometry_type(colegios_validos) %in% c("POLYGON", "MULTIPOLYGON"), ]
+centroides_colegio <- st_centroid(colegios_validos)
+
+# Calculamos distancia a colegios
+dist_matrix <- st_distance(x = sf_test2, y = centroides_colegio)
+dist_min <- apply(dist_matrix, 1, min)
+sf_test2 <- sf_test2 %>% mutate(distancia_colegio = dist_min)
+
+# =============================================================================
+# 32. EXTRACCIÓN Y PROCESAMIENTO DE SUPERMERCADOS
+# =============================================================================
+# Descargamos supermercados desde OSM
+supermercados <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "shop", value = "supermarket")
+supermercados_sf <- osmdata_sf(supermercados)
+
+supermercados_geometria <- supermercados_sf$osm_polygons %>% 
+  dplyr::select(osm_id, name) %>% 
+  st_transform(crs = 4626)
+
+supermercados_validos <- supermercados_geometria[st_is_valid(supermercados_geometria), ]
+supermercados_validos <- supermercados_validos[st_geometry_type(supermercados_validos) %in% c("POLYGON", "MULTIPOLYGON"), ]
+centroides_supermercado <- st_centroid(supermercados_validos)
+
+# Calculamos distancia a supermercados
+dist_matrix <- st_distance(x = sf_test2, y = centroides_supermercado)
+dist_min <- apply(dist_matrix, 1, min)
+sf_test2 <- sf_test2 %>% mutate(distancia_supermercado = dist_min)
+
+# =============================================================================
+# 33. EXTRACCIÓN Y PROCESAMIENTO DE ESTACIONES DE BUS/TRASMILENIO 
+# =============================================================================
+# Descargamos estaciones de bus desde OSM
+bus_station <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "amenity", value = "bus_station")
+bus_station_sf <- osmdata_sf(bus_station)
+
+bus_station_geometria <- bus_station_sf$osm_polygons %>% 
+  dplyr::select(osm_id, name) %>% 
+  st_transform(crs = 4626)
+
+bus_station_validos <- bus_station_geometria[st_is_valid(bus_station_geometria), ]
+bus_station_validos <- bus_station_validos[st_geometry_type(bus_station_validos) %in% c("POLYGON", "MULTIPOLYGON"), ]
+centroides_bus_station <- st_centroid(bus_station_validos)
+
+# Calculamos distancia a estaciones de bus
+dist_matrix <- st_distance(x = sf_test2, y = centroides_bus_station)
+dist_min <- apply(dist_matrix, 1, min)
+sf_test2 <- sf_test2 %>% mutate(distancia_bus = dist_min)
+
+# =============================================================================
+# 34. EXTRACCIÓN Y PROCESAMIENTO DE CAI DE POLICÍA
+# =============================================================================
+# Descargamos CAI desde OSM
+cai <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "amenity", value = "police")
+cai_sf <- osmdata_sf(cai)
+
+cai_geometria <- cai_sf$osm_polygons %>% 
+  dplyr::select(osm_id, name) %>% 
+  st_transform(crs = 4626)
+
+cai_validos <- cai_geometria[st_is_valid(cai_geometria), ]
+cai_validos <- cai_validos[st_geometry_type(cai_validos) %in% c("POLYGON", "MULTIPOLYGON"), ]
+centroides_cai <- st_centroid(cai_validos)
+
+# Calculamos distancia a CAI
+dist_matrix <- st_distance(x = sf_test2, y = centroides_cai)
+dist_min <- apply(dist_matrix, 1, min)
+sf_test2 <- sf_test2 %>% mutate(distancia_cai = dist_min)
+
+# =============================================================================
+# 35. EXTRACCIÓN Y PROCESAMIENTO DE UNIVERSIDADES
+# =============================================================================
+# Descargamos universidades desde OSM
+universidad <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "building", value = "university")
+universidad_sf <- osmdata_sf(universidad)
+
+universidad_geometria <- universidad_sf$osm_polygons %>% 
+  dplyr::select(osm_id, name) %>% 
+  st_transform(crs = 4626)
+
+universidad_validos <- universidad_geometria[st_is_valid(universidad_geometria), ]
+universidad_validos <- universidad_validos[st_geometry_type(universidad_validos) %in% c("POLYGON", "MULTIPOLYGON"), ]
+centroides_universidad <- st_centroid(universidad_validos)
+
+# Calculamos distancia a universidades
+dist_matrix <- st_distance(x = sf_test2, y = centroides_universidad)
+dist_min <- apply(dist_matrix, 1, min)
+sf_test2 <- sf_test2 %>% mutate(distancia_universidad = dist_min)
+
+# =============================================================================
+# 36. EXTRACCIÓN Y PROCESAMIENTO DE AVENIDAS PRINCIPALES
+# =============================================================================
+# Descargamos avenidas principales desde OSM
+avenidas <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "highway", value = "secondary")
+avenidas_sf <- osmdata_sf(avenidas)
+
+avenidas_geometria <- avenidas_sf$osm_lines %>% 
+  dplyr::select(osm_id, name) %>% 
+  st_transform(crs = 4626)
+
+avenidas_validos <- avenidas_geometria[st_is_valid(avenidas_geometria), ]
+
+# Para líneas calculamos distancia directamente sin centroides
+dist_matrix <- st_distance(x = sf_test2, y = avenidas_validos)
+dist_min <- apply(dist_matrix, 1, min)
+sf_test2 <- sf_test2 %>% mutate(distancia_avenida_principal = dist_min)
+
+
+# =============================================================================
+# 37. EXTRACCIÓN Y PROCESAMIENTO DE CENTROS COMERCIALES
+# =============================================================================
+# Descargamos cc desde OSM
+
+comercial <- opq(bbox = getbb("Bogota Colombia")) %>%
+  add_osm_feature(key = "shop", value = "mall")
+comercial_sf <- osmdata_sf(comercial)
+
+
+comercial_geometria <- comercial_sf$osm_polygons %>%
+  dplyr::select(osm_id, name) %>%
+  st_transform(crs = 4626)
+
+comercial_validos <- comercial_geometria[st_is_valid(comercial_geometria), ]
+comercial_validos <- comercial_validos[st_geometry_type(comercial_validos) %in% c("POLYGON", "MULTIPOLYGON"), ]
+centroides_comerciales <- st_centroid(comercial_validos)
+
+# Paso 3: Calcular distancia  a centro comercial
+dist_matrix <- st_distance(x = sf_test2, y = centroides_comerciales)
+dist_min <- apply(dist_matrix, 1, min)
+sf_test2 <- sf_test2 %>% mutate(distancia_centrocomercial = dist_min)
+
+
+# =============================================================================
+# 38. SELECCIÓN DE VARIABLES FINALES
+# =============================================================================
+# Creamos dataset final con variables relevantes
+df_def <- sf_test2 %>% 
+  select(property_id, city, price, month, 
+         year, area_m2, surface_covered, bedrooms, 
+         banos_tot, property_type, property_type2, 
+         lat, lon, title_norm, description, 
+         desc_norm, 
+         LocNombre, upz, barrio_oficial,
+         estrato, dummy_apartaestudio, 
+         dummy_casa, dummy_apartamento, 
+         dummy_garaje, dummy_terraza, 
+         n_pisos_num, piso_numerico, 
+         num_homicidios_anual, 
+         perc_variacion_homicidios, 
+         num_hurto_re_anual, 
+         perc_variacion_hurto_re, 
+         num_hurto_pe_anual, 
+         perc_variacion_hurto_pe, 
+         distancia_avenida_principal, 
+         distancia_bus, distancia_cai, 
+         distancia_colegio, 
+         distancia_gimnasio, 
+         distancia_hospital, 
+         distancia_parque, 
+         area_parque, 
+         distancia_supermercado, 
+         distancia_universidad,
+         distancia_centrocomercial)
+
+# =============================================================================
+# 39. CONSTRUCCIÓN DE MAPPING LOCALIDAD → UPZ
+# =============================================================================
+# Función normalizadora
+norm2 <- function(x) {
+  stringr::str_squish(
+    stringi::stri_trans_general(stringr::str_to_lower(x), "Latin-ASCII")
+  )
+}
+
+# Renombramos columnas relevantes de wiki_data
+wiki_tbl <- wiki_data %>%
+  rename(
+    localidad = Localidad,
+    upz = `Unidad de Planeamiento Zonal`,
+    barrio = Barrio
+  ) %>%
+  mutate(
+    localidad_norm = norm2(localidad),
+    barrio_norm = norm2(barrio),
+    upz = str_squish(upz)
+  )
+
+# Construimos mapping de Localidad a UPZs
+upz_by_loc <- wiki_tbl %>%
+  filter(!is.na(localidad), !is.na(upz), upz != "") %>%
+  mutate(
+    localidad_norm = norm2(localidad),
+    upz_norm = str_squish(upz)
+  ) %>%
+  distinct(localidad_norm, upz_norm) %>%
+  group_by(localidad_norm) %>%
+  summarize(
+    upz = paste(sort(unique(upz_norm)), collapse = ", "),
+    .groups = "drop"
+  )
+
+# =============================================================================
+# 40. INTEGRACIÓN FINAL DE UPZ POR LOCALIDAD
+# =============================================================================
+# Hacemos match con df_def por LocNombre
+df_def <- df_def %>%
+  mutate(localidad_norm = norm2(LocNombre)) %>%
+  left_join(upz_by_loc, by = "localidad_norm") %>%
+  select(-localidad_norm)
+
+# Limpiamos y renombramos columnas finales
+df_def <- df_def %>% 
+  mutate(LocNombre = tolower(LocNombre)) %>% 
+  select(-upz.y) %>% 
+  rename('upz' = 'upz.x')
+
+# =============================================================================
+# GUARDAMOS NUESTRA BASE FINAL 
+# =============================================================================
+
+df_def <- df_def %>%
+  mutate(
+    banos_tot = case_when(
+      # Regla 1: casas con NA → 2
+      is.na(banos_tot) & property_type == "Casa" ~ 2L,
+      
+      # Regla 2: apartamentos con NA y >=3 habitaciones → 2
+      is.na(banos_tot) & property_type == "Apartamento" & bedrooms >= 3 ~ 2L,
+      
+      # Regla 3: apartamentos con NA y <3 habitaciones → 1
+      is.na(banos_tot) & property_type == "Apartamento" & bedrooms < 3 ~ 1L,
+      
+      # En otros casos mantener valor original
+      TRUE ~ banos_tot
+    )
+  )
+
+saveRDS(df_def, file = "df_def_testeo.rds")
