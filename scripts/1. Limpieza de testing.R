@@ -378,3 +378,326 @@ cat("Filas con dummy_apartaestudio = 1:", sum(test$dummy_apartaestudio == 1, na.
 # Mostramos muestra de las filas procesadas
 print(test[1:10, .(title, barrio_detectado, localidad_raw, localidad, upz, upz_nombre, upz_codigo, area_reportada, area_m2, dummy_apartaestudio)])
 print(test[is.na(area_reportada)][1:10, .(title, description, desc_norm)])
+
+
+# =============================================================================
+# 15. CARGA DE DATOS DE CRIMINALIDAD POR LOCALIDAD
+# =============================================================================
+# Definimos ruta del archivo Excel con datos de criminalidad
+excel_path <- "C:/Users/investigacion/Desktop/SP3BDML\\crimen_bogota.xlsx"
+#excel_path <- "crimen_bogota.xlsx"
+excel_path <- "crimen_bogota.xlsx"
+
+# Leemos todas las hojas del archivo Excel
+lista_excel <- excel_sheets(excel_path) %>%
+  set_names() %>%
+  map(~ read_excel(excel_path, sheet = .x))
+
+# Normalizamos la columna localidad en todas las hojas
+lista_excel <- lapply(lista_excel, function(df) {
+  if ("localidad" %in% names(df)) {
+    df %>%
+      mutate(
+        localidad = str_to_lower(localidad),
+        localidad = str_replace_all(localidad, "^[0-9]+-\\s*", ""),
+        localidad = str_squish(localidad),
+        localidad = stri_trans_general(localidad, "Latin-ASCII")
+      )
+  } else {
+    df
+  }
+})
+
+# Extraemos hoja de hurto a personas
+hom_pe <- lista_excel %>% 
+  pluck(which(str_detect(names(.), "_pe")))
+
+head(hom_pe)
+
+# Extraemos hoja de hurto a residencias
+hurt_re <- lista_excel %>% 
+  pluck(which(str_detect(names(.), "_re")))
+
+# Extraemos hoja de homicidios
+homicidios <- lista_excel %>% 
+  pluck(which(str_detect(names(.), "homicidios")))
+
+# =============================================================================
+# 16. INTEGRACIÓN DE DATOS DE CRIMINALIDAD
+# =============================================================================
+# Unimos datos de hurto a personas
+
+test <- test %>%
+  left_join(
+    hom_pe %>%
+      select(localidad, year, 
+             num_hurto_pe_anual, 
+             perc_variacion_hurto_pe),
+    by = c("localidad", "year")
+  )
+
+# Unimos datos de hurto a residencias
+test <- test %>%
+  left_join(
+    hurt_re %>%
+      select(localidad, year, 
+             num_hurto_re_anual, 
+             perc_variacion_hurto_re),
+    by = c("localidad", "year")
+  )
+
+# Unimos datos de homicidios
+test <- test %>%
+  left_join(
+    homicidios %>%
+      select(localidad, year, 
+             num_homicidios_anual, 
+             perc_variacion_homicidios),
+    by = c("localidad", "year")
+  )
+
+# =============================================================================
+# 17. CARGA Y PROCESAMIENTO DE DATOS DE ESTRATOS
+# =============================================================================
+# Cargamos archivo con información de estratos por barrio
+estratos <- read_excel('C:/Users/investigacion/Desktop/SP3BDML\\manzanas_con_barrio.xlsx')
+# estratos <- read_excel("manzanas_con_barrio.xlsx")
+estratos <- read_excel("manzanas_con_barrio.xlsx")
+
+head(estratos)
+
+# Limpiamos espacios en blanco
+estratos <- estratos %>%
+  mutate(across(where(is.character), str_squish))
+
+# Función para normalizar texto
+normalize <- function(x) {
+  x |> str_to_lower() |>
+    stringi::stri_trans_general("Latin-ASCII") |>
+    str_replace_all("[^a-z0-9 ]", " ") |>
+    str_squish()
+}
+
+# Función para quitar artículos y palabras neutras
+strip_words <- function(x) {
+  x |> str_replace_all("\\b(el|la|los|las|de|del|y)\\b", "") |> str_squish()
+}
+
+# Preparamos diccionario de estratos
+estratos_norm <- estratos %>%
+  mutate(barrio_key = strip_words(normalize(barrio))) %>%
+  distinct(barrio_key, .keep_all = TRUE) %>%
+  select(barrio_key, estrato)
+
+# Preparamos test para join
+test_norm <- test %>%
+  mutate(barrio_key = strip_words(normalize(barrio_oficial)))
+
+# Hacemos join exacto sobre la clave normalizada
+test_match2 <- test_norm %>%
+  left_join(estratos_norm, by = "barrio_key") %>%
+  select(-barrio_key)
+
+# Verificamos barrios sin estrato asignado
+test_match2  %>% 
+  select(barrio_oficial, estrato) %>% 
+  filter(!is.na(barrio_oficial) & is.na(estrato))
+
+# Calculamos frecuencia de barrios sin estrato
+freq_na <- test_match2  %>%
+  filter(!is.na(barrio_oficial), is.na(estrato)) %>%
+  count(barrio_oficial, name = "n_na") %>% 
+  arrange(desc(n_na))
+
+freq_na
+
+# Calculamos porcentaje de NA por barrio (top 35)
+top10_pct_global <- test_match2 %>%
+  filter(!is.na(barrio_oficial), is.na(estrato)) %>%
+  count(barrio_oficial, name = "n_na") %>%
+  mutate(pct_na = n_na / sum(n_na),
+         pct_na = percent(pct_na, accuracy = 0.1)) %>%
+  arrange(desc(n_na)) %>%
+  slice_head(n = 35)
+
+top10_pct_global
+
+# Formateamos variable estrato con prefijo
+test_match2 <- test_match2 %>%
+  mutate(estrato = if_else(!is.na(estrato),
+                           paste0('Estrato_', estrato),
+                           NA_character_))
+
+# =============================================================================
+# 18. CREACIÓN DE DUMMIES DESDE DESCRIPCIONES
+# =============================================================================
+
+# Dummy de garaje/parqueadero
+pat <- "\\b(parqueadero|parqueaderos|garaje|garajes|estacionamiento|estacionamientos|garage|garages)\\b"
+
+test_match2 <- test_match2 %>%
+  mutate(
+    dummy_garaje = as.integer(
+      coalesce(str_detect(description, regex(pat, ignore_case = TRUE)), FALSE)
+    )
+  )
+
+# Dummy de terraza
+pat_2 <- "\\b(terraza|terrazas)\\b"
+
+test_match2 <- test_match2 %>%
+  mutate(
+    dummy_terraza = as.integer(
+      coalesce(str_detect(description, regex(pat_2, 
+                                             ignore_case = TRUE)), FALSE)
+    )
+  )
+
+# =============================================================================
+# 19. EXTRACCIÓN DE NÚMERO DE BAÑOS
+# =============================================================================
+# Patrón para detectar la palabra baño y variantes
+pres_pat <- "\\b(?:ba(?:ñ|n)o(?:s)?)\\b"
+
+# Patrón para extraer número a la izquierda de "baño"
+num_pat <- "\\b(\\d{1,3})\\s*(?:[-–—]?\\s*)?(?:ba(?:ñ|n)o(?:s)?)\\b"
+
+# Construimos variable de baños totales
+test_match2 <- test_match2 %>%
+  mutate(
+    # Convertimos bathrooms a entero si es posible
+    bathrooms_num = suppressWarnings(as.numeric(bathrooms)),
+    bathrooms_int = if_else(
+      !is.na(bathrooms_num) & bathrooms_num %% 1 == 0,
+      as.integer(bathrooms_num),
+      NA_integer_
+    ),
+    
+    # Extraemos número de la descripción
+    num_left = suppressWarnings(as.integer(
+      str_match(description, regex(num_pat, ignore_case = TRUE))[, 2]
+    )),
+    
+    # Detectamos presencia de la palabra "baño"
+    has_bath_word = coalesce(
+      str_detect(description, regex(pres_pat, ignore_case = TRUE)),
+      FALSE
+    ),
+    
+    # Aplicamos regla de construcción: bathrooms > description > presencia
+    banos_tot = case_when(
+      !is.na(bathrooms_int) ~ bathrooms_int,
+      !is.na(num_left) ~ num_left,
+      has_bath_word ~ 1L,
+      TRUE ~ NA_integer_
+    )
+  ) %>%
+  select(-bathrooms_num, -bathrooms_int, -num_left, -has_bath_word)
+
+# =============================================================================
+# 20. CÁLCULO DE PRECIO POR METRO CUADRADO
+# =============================================================================
+# Calculamos precio por m2 y en millones
+test_match2 <- test_match2 %>% 
+  mutate(precio_mt2 = round(price/area_m2),
+         precio_mt2_mill = precio_mt2/1000000)
+
+# Guardamos en test2
+test2 <- test_match2
+
+# =============================================================================
+# 21. CREACIÓN DE VARIABLES DERIVADAS DEL TIPO DE PROPIEDAD
+# =============================================================================
+# Función para limpiar textos
+clean_txt <- function(str){
+  str_squish(str_to_lower(
+    stringi::stri_trans_general(
+      str_replace_all(str, '[^[:alnum:]]', " "), 'Latin-ASCII'))
+  )
+}
+
+# Creamos variable property_type2 desde descripción
+test2 <- test2 %>% 
+  mutate(description_c = clean_txt(description),
+         property_type2 = case_when(
+           grepl("\\bcasa\\b", description_c) ~ "Casa",
+           grepl("\\bapto|apartamento", description_c) ~ "Apartamento",
+           TRUE ~ NA_character_
+         ))
+
+# Verificamos valores faltantes
+sum(is.na(test2$property_type2))
+
+# Imputamos moda para valores faltantes
+dt <- as.data.table(test2)
+
+moda <- dt[!is.na(property_type2),
+           .N,
+           by = property_type2][order(-N)][1, property_type2]
+test2 <- test2 %>%
+  mutate(property_type2 = if_else(is.na(property_type2), moda, property_type2))
+
+# Creamos dummies para Casa y Apartamento (excluyendo apartaestudios)
+test2 <- test2 %>%
+  mutate(
+    dummy_casa = if_else(property_type2 == "Casa" & dummy_apartaestudio != 1, 1L, 0L),
+    dummy_apartamento = if_else(property_type2 == "Apartamento" & dummy_apartaestudio != 1, 1L, 0L)
+  )
+
+# =============================================================================
+# 22. EXTRACCIÓN DE NÚMERO DE PISOS (PARA CASAS)
+# =============================================================================
+# Diccionario de números escritos
+numeros_escritos <- c("dos", "tres", "cuatro", "cinco", "seis", "siete", 
+                      "ocho", "nueve", "diez")
+numeros_numericos <- as.character(2:10)
+
+# Extraemos y procesamos número de pisos
+test2 <- test2 %>%
+  mutate(n_pisos = str_extract(description, "(\\b\\w{3,6}|\\d+) pisos")) %>%
+  mutate(n_pisos = ifelse(property_type2 == "Casa", n_pisos, NA)) %>% 
+  mutate(n_pisos = str_replace_all(n_pisos, setNames(numeros_numericos, numeros_escritos))) %>%
+  mutate(n_pisos_num = as.integer(stri_extract_first(n_pisos, regex = "\\d+"))) %>% 
+  mutate(n_pisos_num = case_when(
+    is.na(n_pisos_num) ~ 1L,
+    .default = n_pisos_num)) %>%
+  mutate(n_pisos_num = if_else(n_pisos_num > 10, 1L, n_pisos_num))
+
+# Imputamos 1 piso para casas sin información
+test2 <- test2 %>%
+  mutate(n_pisos_num = case_when(
+    property_type2 == "Casa" & is.na(n_pisos_num) ~ 1L,
+    property_type2 == "Casa" ~ n_pisos_num,
+    TRUE ~ NA_integer_
+  ))
+
+# =============================================================================
+# 23. EXTRACCIÓN DE PISO DEL APARTAMENTO
+# =============================================================================
+# Diccionario de números ordinales escritos
+numeros_escritos <- c("uno|primero|primer", "dos|segundo|segund", 
+                      "tres|tercero|tercer", "cuatro|cuarto", "cinco|quinto", 
+                      "seis|sexto", "siete|septimo", "ocho|octavo", 
+                      "nueve|noveno", "diez|decimo|dei")
+numeros_num <- as.character(1:10)
+
+# Extraemos y procesamos número de piso
+test2 <- test2 %>%
+  mutate(piso_info = str_extract(description, "(\\b\\w+|\\d+) piso (\\w+|\\d+)")) %>% 
+  mutate(mts_info_bool = grepl(pattern = "\\d+(?=m[ts2]+)", piso_info, perl = TRUE)) %>% 
+  mutate(piso_info = str_replace_all(piso_info, setNames(numeros_num, numeros_escritos))) %>% 
+  mutate(piso_numerico = as.integer(stri_extract_first(piso_info, regex = "\\d+"))) %>% 
+  mutate(piso_numerico = ifelse(piso_numerico > 66, NA, piso_numerico)) %>%
+  mutate(piso_numerico = ifelse(property_type2 == "Casa", 1, piso_numerico))
+
+# Imputamos 1 para valores faltantes
+test2 <- test2 %>%
+  mutate(piso_numerico = replace_na(piso_numerico, 1))
+
+# Aseguramos que apartamentos tengan valor
+test2 <- test2 %>%
+  mutate(piso_numerico = case_when(
+    property_type2 == "Apartamento" & is.na(piso_numerico) ~ 1L,
+    property_type2 == "Apartamento" ~ piso_numerico,
+    TRUE ~ NA_integer_
+  ))
