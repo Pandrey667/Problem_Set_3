@@ -83,3 +83,79 @@ for(v in factor_vars){
   }
 }
 
+# ==================================================================================
+# 6. UNIR FULL
+# ==================================================================================
+test2$price <- NA_real_
+train2$.is_test <- 0
+test2$.is_test  <- 1
+
+full <- bind_rows(train2, test2)
+cat("FULL:", nrow(full), "filas\n")
+
+# ==================================================================================
+# 7. LISTA DE PREDICTORAS FINALES
+# ==================================================================================
+predictors_final <- setdiff(colnames(full), c("property_id","price",".is_test"))
+
+# ==================================================================================
+# 8. FUNCIÓN ROBUSTA PARA CREAR MATRICES COLUMNA A COLUMNA
+# ==================================================================================
+build_block <- function(var, df){
+  
+  x <- df[[var]]
+  n <- nrow(df)
+  
+  # numérico → ok
+  if(is.numeric(x) || is.integer(x)){
+    m <- matrix(x, ncol=1); colnames(m) <- var; return(m)
+  }
+  
+  # factor/char → dummies
+  if(is.factor(x) || is.character(x)){
+    tmp <- data.frame(tmp=x)
+    mm <- model.matrix(~ tmp - 1, tmp, na.action=na.pass)
+    colnames(mm) <- make.names(paste0(var,"_",colnames(mm)))
+    return(mm)
+  }
+  
+  # lógico
+  if(is.logical(x)){
+    m <- matrix(as.numeric(x), ncol=1); colnames(m) <- var; return(m)
+  }
+  
+  # cualquier otra cosa → convertir a numeric
+  tmp <- suppressWarnings(as.numeric(x))
+  tmp[is.na(tmp)] <- 0
+  m <- matrix(tmp, ncol=1); colnames(m) <- var
+  return(m)
+}
+
+# ==================================================================================
+# 9. CONSTRUIR X_full
+# ==================================================================================
+blocks <- list()
+bad <- c()
+
+for(v in predictors_final){
+  blk <- tryCatch(build_block(v, full), error=function(e) NULL)
+  if(is.null(blk) || nrow(blk)!=nrow(full)){
+    bad <- c(bad, v)
+    next
+  }
+  blocks[[v]] <- blk
+}
+
+if(length(bad)>0){
+  cat("Variables eliminadas:", paste(bad,collapse=", "), "\n")
+}
+
+X_full <- do.call(cbind, blocks)
+cat("X_full:", dim(X_full)[1],"x",dim(X_full)[2],"\n")
+
+# Separar
+X_train <- X_full[full$.is_test==0,,drop=FALSE]
+X_test  <- X_full[full$.is_test==1,,drop=FALSE]
+y_train <- full$price[full$.is_test==0]
+
+
