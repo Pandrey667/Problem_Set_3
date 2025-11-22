@@ -158,4 +158,104 @@ X_train <- X_full[full$.is_test==0,,drop=FALSE]
 X_test  <- X_full[full$.is_test==1,,drop=FALSE]
 y_train <- full$price[full$.is_test==0]
 
+# ==================================================================================
+# 10. HOLDOUT PARA MÉTRICAS
+# ==================================================================================
+set.seed(123)
+idx <- sample(seq_along(y_train), floor(0.2*length(y_train)))
+X_tr <- X_train[-idx,,drop=FALSE]
+X_val<- X_train[idx,,drop=FALSE]
+y_tr <- y_train[-idx]
+y_val<- y_train[idx]
+
+metricas <- function(real, pred){
+  data.frame(
+    RMSE = sqrt(mean((real-pred)^2)),
+    MAE  = mean(abs(real-pred)),
+    R2   = 1 - sum((real-pred)^2)/sum((real-mean(real))^2),
+    MAPE = mean(abs((real-pred)/real))*100
+  )
+}
+
+to_dmatrix <- function(X,y=NULL){
+  if(is.null(y)) return(xgb.DMatrix(X))
+  xgb.DMatrix(data=X,label=y)
+}
+
+guardar_submission <- function(property_id, pred, fname){
+  out <- data.frame(property_id=property_id, price=pred)
+  write.csv(out, file.path(Sys.getenv("USERPROFILE"),"Downloads",fname), row.names=FALSE)
+  cat("Guardado:", fname, "\n")
+}
+
+# ==================================================================================
+# 11. DEFINICIÓN DE VARIANTES
+# ==================================================================================
+variants <- list()
+
+# ================================
+# (1) XGB BASE
+# ================================
+variants[[1]] <- list(
+  name="xgb_base",
+  feature_func=function(X) X,
+  params=list(booster="gbtree",objective="reg:squarederror",eval_metric="rmse",
+              eta=0.05,max_depth=10,subsample=0.8,colsample_bytree=0.8),
+  nrounds_max=2000,
+  early_stop_rounds=80
+)
+
+# ================================
+# (2) XGB INTERACTIONS
+# ================================
+variants[[2]] <- list(
+  name="xgb_interactions",
+  feature_func=function(X){
+    df <- as.data.frame(X)
+    if("area_final" %in% colnames(df) && "bedrooms" %in% colnames(df))
+      df$areaXrooms <- df$area_final * df$bedrooms
+    as.matrix(df)
+  },
+  params=variants[[1]]$params,
+  nrounds_max=2000, early_stop_rounds=80
+)
+
+# ================================
+# (3) XGB SPATIAL MEAN UPZ (BASE)
+# ================================
+variants[[3]] <- list(
+  name="xgb_spatial_mean_upz",
+  feature_func=function(X){
+    df <- as.data.frame(X)
+    if("upz" %in% colnames(df)){
+      df$upz_num <- as.integer(as.factor(df$upz))
+    } else df$upz_num <- 0
+    as.matrix(df)
+  },
+  params=variants[[1]]$params,
+  nrounds_max=1500, early_stop_rounds=80
+)
+
+# ================================
+# (4) XGB REGULARIZED
+# ================================
+variants[[4]] <- list(
+  name="xgb_regularized",
+  feature_func=function(X) X,
+  params=list(booster="gbtree",objective="reg:squarederror",
+              eval_metric="rmse",eta=0.03,max_depth=12,
+              lambda=3,alpha=1,subsample=0.75,colsample_bytree=0.7),
+  nrounds_max=2500, early_stop_rounds=120
+)
+
+# ================================
+# (5) XGB LOG TARGET
+# ================================
+variants[[5]] <- list(
+  name="xgb_logtarget",
+  feature_func=function(X) X,
+  params=variants[[1]]$params,
+  use_log_target=TRUE,
+  nrounds_max=2000, early_stop_rounds=100
+)
 
