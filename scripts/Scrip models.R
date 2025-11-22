@@ -481,3 +481,21 @@ for(i in seq_along(variants)){
   guardar_submission(test2$property_id, pred_test, fname)
 }
 
+
+# ==================================================================================
+# 14. TABLA COMPARATIVA
+# ==================================================================================
+summary_table <- lapply(names(results_list), function(nm){
+  res <- results_list[[nm]]
+  data.frame(
+    model=nm,
+    RMSE=res$metrics_holdout$RMSE,
+    MAE =res$metrics_holdout$MAE,
+    R2  =res$metrics_holdout$R2,
+    MAPE=res$metrics_holdout$MAPE,
+    nrounds=res$best_nrounds
+  )
+}) %>% bind_rows()
+
+cat("\n===== COMPARATIVA FINAL (HOLDOUT) =====\n")
+print(summary_table)
