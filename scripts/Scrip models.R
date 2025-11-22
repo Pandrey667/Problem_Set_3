@@ -354,3 +354,130 @@ variants[[7]] <- list(
   is_neural_net = TRUE  # flag especial para detectarlo
 )
 
+# ==================================================================================
+# 13. ENTRENAMIENTO DE LAS VARIANTES
+# ==================================================================================
+results_list <- list()
+preds_test_list <- list()
+
+for(i in seq_along(variants)){
+  
+  v <- variants[[i]]
+  cat("\n\n==============================")
+  cat("\nENTRENANDO:", v$name, " (", i,"/",length(variants),")\n")
+  cat("==============================\n")
+  
+  Xvar     <- v$feature_func(X_full)
+  Xtrain_v <- Xvar[full$.is_test==0,,drop=FALSE]
+  Xtest_v  <- Xvar[full$.is_test==1,,drop=FALSE]
+  
+  use_log <- isTRUE(v$use_log_target)
+  y_tr_xgb  <- if(use_log) log1p(y_tr)  else y_tr
+  y_val_xgb <- if(use_log) log1p(y_val) else y_val
+  y_full_xgb<- if(use_log) log1p(y_train) else y_train
+  
+  dtrain_cv <- to_dmatrix(Xtrain_v, y_full_xgb)
+  
+  cvres <- tryCatch(
+    xgb.cv(
+      params=v$params,
+      data=dtrain_cv,
+      nrounds=v$nrounds_max,
+      nfold=5,
+      early_stopping_rounds=v$early_stop_rounds,
+      verbose=0
+    ),
+    error=function(e) NULL
+  )
+  
+  best_nrounds <- if(!is.null(cvres)) cvres$best_iteration else floor(v$nrounds_max/2)
+  
+  cat("Best nrounds:", best_nrounds, "\n")
+  
+  dtrain_tr <- to_dmatrix(X_tr, y_tr_xgb)
+  dval_tr   <- to_dmatrix(X_val, y_val_xgb)
+  # ===========================================================
+  # SI LA VARIANTE ES RED NEURONAL
+  # ===========================================================
+  if(!is.null(v$is_neural_net) && v$is_neural_net){
+    
+    cat("\n---- ENTRENANDO RED NEURONAL MLP ----\n")
+    
+    Xvar     <- v$feature_func(X_full)
+    Xtrain_v <- Xvar[full$.is_test==0,,drop=FALSE]
+    Xtest_v  <- Xvar[full$.is_test==1,,drop=FALSE]
+    
+    # Holdout
+    X_train_tr <- Xtrain_v[-idx,,drop=FALSE]
+    X_train_val<- Xtrain_v[idx,,drop=FALSE]
+    y_train_tr <- y_tr
+    y_train_val<- y_val
+    
+    # Entrenamiento MLP
+    set.seed(123)
+    nn_model <- nnet(
+      x = X_train_tr,
+      y = y_train_tr,
+      size  = v$params$size,
+      decay = v$params$decay,
+      maxit = v$params$maxit,
+      linout = TRUE,
+      trace = FALSE
+    )
+    
+    # Validación
+    pred_val <- predict(nn_model, X_train_val)
+    mets <- metricas(y_val, pred_val)
+    print(mets)
+    
+    # Reentrenar en TODO el train
+    nn_full <- nnet(
+      x = Xtrain_v,
+      y = y_train,
+      size  = v$params$size,
+      decay = v$params$decay,
+      maxit = v$params$maxit,
+      linout = TRUE,
+      trace = FALSE
+    )
+    
+    pred_test <- as.numeric(predict(nn_full, Xtest_v))
+    
+    # Guardar resultados
+    results_list[[v$name]] <- list(metrics_holdout=mets, best_nrounds=NA)
+    preds_test_list[[v$name]] <- pred_test
+    
+    fname <- paste0("submission_",v$name,".csv")
+    guardar_submission(test2$property_id, pred_test, fname)
+    
+    next  # IMPORTANTÍSIMO → saltarse la parte XGBoost
+  }
+  
+  model_xgb <- xgb.train(
+    params=v$params,
+    data=dtrain_tr,
+    nrounds=best_nrounds,
+    watchlist=list(train=dtrain_tr, eval=dval_tr),
+    verbose=0
+  )
+  
+  pred_val_raw <- predict(model_xgb, dval_tr)
+  pred_val <- if(use_log) expm1(pred_val_raw) else pred_val_raw
+  
+  mets <- metricas(y_val, pred_val)
+  print(mets)
+  
+  dtrain_all <- to_dmatrix(Xtrain_v, y_full_xgb)
+  model_full <- xgb.train(params=v$params, data=dtrain_all, nrounds=best_nrounds, verbose=0)
+  
+  pred_test_raw <- predict(model_full, to_dmatrix(Xtest_v))
+  pred_test <- if(use_log) expm1(pred_test_raw) else pred_test_raw
+  
+  results_list[[v$name]] <- list(metrics_holdout=mets, best_nrounds=best_nrounds)
+  preds_test_list[[v$name]] <- pred_test
+  
+  # guardar submission
+  fname <- paste0("submission_",v$name,".csv")
+  guardar_submission(test2$property_id, pred_test, fname)
+}
+
