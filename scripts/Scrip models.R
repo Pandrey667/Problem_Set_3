@@ -259,3 +259,98 @@ variants[[5]] <- list(
   nrounds_max=2000, early_stop_rounds=100
 )
 
+# ==================================================================================
+# 12. NUEVA VARIANTE (CORREGIDA) — xgb_crime_density2
+# ==================================================================================
+variants[[6]] <- list(
+  name="xgb_crime_density2",
+  feature_func=function(X){
+    
+    df <- as.data.frame(X)
+    
+    df$idx_global <- seq_len(nrow(df))
+    
+    if("LocNombre" %in% colnames(df)) df$idx_loc <- as.integer(as.factor(df$LocNombre)) else df$idx_loc <- 0
+    if("upz" %in% colnames(df))       df$idx_upz <- as.integer(as.factor(df$upz))       else df$idx_upz <- 0
+    
+    safe_num <- function(v){
+      v <- suppressWarnings(as.numeric(v))
+      if(is.null(v)) return(rep(0,nrow(df)))
+      v[is.na(v)] <- 0
+      return(v)
+    }
+    
+    hom  <- safe_num(df$num_homicidios_anual)
+    hur  <- safe_num(df$num_hurto_re_anual) + safe_num(df$num_hurto_pe_anual)
+    area <- safe_num(df$area_final); area[area<=0] <- 1
+    
+    df$density_hom  <- hom/area
+    df$density_hurt <- hur/area
+    df$log_hom      <- log1p(hom)
+    df$log_hurt     <- log1p(hur)
+    df$sqrt_hurt    <- sqrt(hur)
+    
+    df <- df %>% mutate(across(everything(), function(x){
+      if(is.factor(x)) return(as.numeric(x))
+      if(is.character(x)){
+        z <- suppressWarnings(as.numeric(x))
+        z[is.na(z)] <- 0; return(z)
+      }
+      if(is.logical(x)) return(as.numeric(x))
+      z <- suppressWarnings(as.numeric(x)); z[is.na(z)] <- 0; return(z)
+    }))
+    
+    df[is.na(df)] <- 0
+    as.matrix(df)
+  },
+  
+  params=list(
+    booster="gbtree",
+    objective="reg:squarederror",
+    eval_metric="rmse",
+    eta=0.03,
+    max_depth=9,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    min_child_weight=2,
+    lambda=1.0,
+    alpha=0.2
+  ),
+  
+  nrounds_max=2000,
+  early_stop_rounds=100
+)
+
+# ==================================================================================
+# 12 BIS. NUEVA VARIANTE — RED NEURONAL (MLP)
+# ==================================================================================
+
+library(nnet)
+
+variants[[7]] <- list(
+  name = "neural_network_mlp",
+  
+  # Usa exactamente las mismas features numéricas que X_full
+  feature_func = function(X){
+    df <- as.data.frame(X)
+    
+    # asegurar que TODO sea numérico
+    df <- df %>% mutate(across(everything(), function(z){
+      z2 <- suppressWarnings(as.numeric(z))
+      z2[is.na(z2)] <- 0
+      return(z2)
+    }))
+    
+    as.matrix(df)
+  },
+  
+  # hiperparámetros de red neuronal
+  params = list(
+    size = 20,          # número de neuronas en la capa oculta
+    decay = 0.001,      # regularización L2
+    maxit = 300         # iteraciones
+  ),
+  
+  is_neural_net = TRUE  # flag especial para detectarlo
+)
+
