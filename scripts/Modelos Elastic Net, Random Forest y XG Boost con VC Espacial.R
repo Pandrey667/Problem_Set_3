@@ -214,4 +214,128 @@ base_train_df <- base_train_df %>% select(-price)
 #Verificamo NAs después de imputar por cluster
 colSums(is.na(base_train_df))
 colSums(is.na(base_test_df))
+#MODELO Boosting (XGBoost)
+
+#Elegimos las variables a usar en el modelo
+form_x <- log_price ~ . - property_id - log_price
+
+#Construimos model.frame sin que se borre TODO
+mf_train <- model.frame(form_x, data = base_train_df, na.action = na.omit)
+
+#Verificamos que las filas se mantengan
+nrow(mf_train)
+
+# Construimos los TERMS usando también la data
+terms_full <- terms(form_x, data = base_train_df)
+
+# Armamos el model.frame del TRAIN
+mf_train <- model.frame(terms_full, data = base_train_df, na.action = na.omit)
+
+# Generamos y_train
+y_train  <- model.response(mf_train)
+
+# Matriz X_train
+X_train  <- model.matrix(terms_full, data = base_train_df)[, -1, drop = FALSE]
+
+# TERMS para TEST
+terms_x  <- delete.response(terms_full)
+
+#Matriz X_test con la misma estructura de columnas
+X_test   <- model.matrix(terms_x, data = base_test_df)[, -1, drop = FALSE]
+
+# Chequeos
+dim(X_train)
+dim(X_test)
+length(y_train)
+
+#Convertimos las matrices creadas al modelo XGBoost
+X_train_mat <- as.matrix(X_train)
+X_test_mat  <- as.matrix(X_test)
+y_vec       <- as.numeric(y_train)   
+
+#Creamos train / valid interno para evaluar (MAE)
+#Vamos a separar 80% para entrenar y 20% para validar:
+
+n <- nrow(X_train_mat)
+idx_train <- sample(1:n, size = floor(0.8 * n))
+idx_valid <- setdiff(1:n, idx_train)
+
+X_tr <- X_train_mat[idx_train, ]
+X_va <- X_train_mat[idx_valid, ]
+y_tr <- y_vec[idx_train]
+y_va <- y_vec[idx_valid]
+
+#Construimos los DMatrix que usa XGBoost
+dtrain <- xgb.DMatrix(data = X_tr, label = y_tr)
+dvalid <- xgb.DMatrix(data = X_va, label = y_va)
+
+# También uno con TODO el train (para el modelo final después)
+dall   <- xgb.DMatrix(data = X_train_mat, label = y_vec)
+
+# Y el test
+dtest  <- xgb.DMatrix(data = X_test_mat)
+
+#Asignamos los hiperparametros del XGBoost
+params <- list(
+  booster = "gbtree",
+  objective = "reg:squarederror",  # predice log_price con MSE en log
+  eval_metric = "mae",             # monitoreamos MAE (sobre log_price)
+  eta = 0.05,                      # learning rate (más pequeño = más estable)
+  max_depth = 6,                   # profundidad de los árboles
+  subsample = 0.8,                 # fracción de filas usada por árbol
+  colsample_bytree = 0.8,          # fracción de columnas por árbol
+  min_child_weight = 5,            # regularización (no hacer hojas con muy pocos datos)
+  lambda = 1,                      # L2 (ridge) en pesos
+  alpha = 0                        # L1 (Lasso) en pesos (puedes probar > 0)
+)
+
+#Entrenamos con early stopping
+watchlist <- list(
+  train = dtrain,
+  valid = dvalid
+)
+
+xgb_fit <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 2000,              # máximo de iteraciones
+  watchlist = watchlist,
+  early_stopping_rounds = 50,  # si 50 rondas seguidas no mejora el MAE, se para
+  print_every_n = 50
+)
+
+
+#Generamos el número optimo de arboles y el minimo
+xgb_fit$best_iteration  # número óptimo de árboles
+xgb_fit$best_score      # MAE mínimo (en log_price)
+
+#Entrenamos el modelo final y generamos predicciones
+best_nrounds <- xgb_fit$best_iteration
+
+xgb_final <- xgb.train(
+  params = params,
+  data   = dall,
+  nrounds = best_nrounds
+)
+
+#Pasamos a pesos la predicción y redondeamos
+pred_log   <- predict(xgb_final, dtest)
+pred_price <- exp(pred_log)
+pred_price <- round(pred_price, -3)
+
+#Verificamos que todo esté alineado
+length(pred_price)
+nrow(base_test_df)
+
+# Armamos el data frame de submission
+submission_xgb <- data.frame(
+  property_id = base_test_df$property_id,
+  price       = pred_price
+)
+
+#Guardamos el archivo para Kaggle
+write.csv(submission_xgb, "Boosting(XGBoost)YC.csv", row.names = FALSE)
+
+#Visualizamos una parte de los datos
+head(submission_xgb)
 
