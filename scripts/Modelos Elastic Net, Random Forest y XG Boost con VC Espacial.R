@@ -406,5 +406,97 @@ submission_en <- data.frame(
 
 # Guardamos CSV para Kaggle
 write.csv(submission_en, "ElasticNet_YC_dfdef.csv", row.names = FALSE)
+#RANDOM FOREST
 
+#Llamamos las bases
+train_rf <- base_train_df
+test_rf  <- base_test_df
+
+#Definimos la rejilla de hiperparámetros
+coords <- train_rf %>% select(lat, lon) %>% as.matrix()
+cl_spatial <- kmeans(coords, centers = 5, nstart = 20)
+folds <- cl_spatial$cluster
+
+train_rf$fold <- folds
+unique(folds)
+
+#Grid de hiperparámetros
+grid <- expand.grid(
+  num.trees     = c(300, 500),
+  mtry          = c(floor(sqrt(ncol(train_rf)-2)), 15),
+  min.node.size = c(5, 10, 20)
+)
+
+grid
+
+#Cross-validation espacial REAL
+results_rf <- list()
+
+for(i in 1:nrow(grid)) {
+  params <- grid[i, ]
+  maes <- c()
+  
+  for(k in unique(folds)) {
+    train_cv <- train_rf[train_rf$fold != k, ]
+    valid_cv <- train_rf[train_rf$fold == k, ]
+    
+    model_cv <- ranger(
+      log_price ~ . - property_id - fold,
+      data = train_cv,
+      num.trees     = params$num.trees,
+      mtry          = params$mtry,
+      min.node.size = params$min.node.size,
+      importance    = "impurity"
+    )
+    
+    pred_cv <- predict(model_cv, valid_cv)$predictions
+    mae_k <- MLmetrics::MAE(pred_cv, valid_cv$log_price)
+    maes <- c(maes, mae_k)
+  }
+  
+  results_rf[[i]] <- data.frame(
+    num.trees     = params$num.trees,
+    mtry          = params$mtry,
+    min.node.size = params$min.node.size,
+    mae_mean      = mean(maes),
+    mae_sd        = sd(maes)
+  )
+}
+
+results_rf <- bind_rows(results_rf) %>% arrange(mae_mean)
+results_rf
+
+#Elegimos los mejores hiperparámetros
+best_rf <- results_rf[1, ]
+best_rf
+
+#Entrenamos el modelo final con los hiperparametros elegidos
+rf_final <- ranger(
+  log_price ~ . - property_id - fold,
+  data = train_rf,
+  num.trees     = best_rf$num.trees,
+  mtry          = best_rf$mtry,
+  min.node.size = best_rf$min.node.size,
+  importance    = "impurity"
+)
+
+#Generamos el listado de las variables según su importancia
+imp <- data.frame(
+  variable = names(rf_final$variable.importance),
+  importance = as.numeric(rf_final$variable.importance)
+) %>% arrange(desc(importance))
+
+head(imp, 15)
+
+#Predecimos en Kaggle
+pred_rf <- predict(rf_final, test_rf)$predictions
+pred_rf_price <- exp(pred_rf)
+pred_rf_price <- round(pred_rf_price, -3)
+
+submission_rf <- data.frame(
+  property_id = base_test_df$property_id,
+  price       = pred_rf_price
+)
+
+write.csv(submission_rf, "rf_spatialCV_final.csv", row.names = FALSE)
 
