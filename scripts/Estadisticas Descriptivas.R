@@ -148,3 +148,182 @@ train_imp$price <- suppressWarnings(readr::parse_number(as.character(train_imp$p
 
 stopifnot(length(train_imp$price) == nrow(train_imp))
 
+##########################################################
+# GENERACIÓN DE TABLAS CON ESTADÍSTICAS DESCRIPTIVAS
+###############################################################
+# ------------------------
+# Variables de numéricas
+# ------------------------
+
+dummy_cols <- grep("^dummy_", names(train_imp), value = TRUE)
+
+num_cols <- names(train_imp)[sapply(train_imp, is.numeric)]
+num_cols <- setdiff(num_cols, c("price", dummy_cols))#excluimos price y dummys
+
+# Función para tabla numérica
+tabla_numericas <- function(df, base_name){
+  df %>%
+    select(all_of(num_cols)) %>%
+    summarise(
+      across(
+        everything(),
+        list(
+          n      = ~sum(!is.na(.)),
+          mean   = ~mean(., na.rm = TRUE),
+          median = ~median(., na.rm = TRUE)
+        ),
+        .names = "{.col}___{.fn}"
+      )
+    ) %>%
+    pivot_longer(
+      cols      = everything(),
+      names_to  = c("variable","stat"),
+      names_sep = "___",
+      values_to = "valor"
+    ) %>%
+    pivot_wider(
+      names_from  = stat,
+      values_from = valor
+    ) %>%
+    mutate(Base = base_name)
+}
+
+
+# Tablas Train y Test
+tab_train_num <- tabla_numericas(train_imp, "Train")
+tab_test_num  <- tabla_numericas(test_imp,  "Test")
+
+# Unión final
+
+tabla_num_base <- bind_rows(tab_train_num, tab_test_num) %>%
+  select(Base, variable, n, mean, median)
+
+#Convertir la tabla a Data frame
+tabla_numerica_final_df <- as.data.frame(tabla_num_base )
+
+## Ajustamos el diseño de la tabla
+
+tabla_numerica_final <- tabla_num_base %>%
+  mutate(
+    n          = as.integer(n),
+    mean_num   = as.numeric(mean),
+    median_num = as.numeric(median),
+    # formateo:
+    mean_print = if_else(
+      grepl("^perc_variacion", variable),
+      sprintf("%.2f", mean_num),   # porcentajes: 2 decimales
+      sprintf("%.0f", mean_num)    # resto: sin decimales
+    ),
+    median_print = if_else(
+      grepl("^perc_variacion", variable),
+      sprintf("%.2f", median_num),
+      sprintf("%.0f", median_num)
+    )
+  ) %>%
+  transmute(
+    Base,
+    variable,
+    n,
+    mean   = mean_print,
+    median = median_print
+  )
+
+tabla_numerica_final %>% filter(grepl("^perc_variacion", variable))
+
+tabla_numerica_tex <- tabla_numerica_final %>%
+  mutate(variable = paste0("\\texttt{", variable, "}"))
+
+## Exportamos a LaTeX
+
+print(
+  xtable(
+    tabla_numerica_tex,
+    caption = "Tabla X. Estadísticas descriptivas de variables numéricas en las bases \\textit{Train} y \\textit{Test}.",
+    label   = "tab:descriptivas_num",
+    align   = c("l","l","l","c","r","r")  # Base, variable, n, mean, median
+  ),
+  include.rownames = FALSE,
+  sanitize.text.function = identity
+)
+
+
+# ------------------------
+# Variables de categóricas
+# ------------------------
+
+# Dummies: numéricas que solo tienen 0/1 (ignorando NA)
+dummy_cols <- names(train_imp)[sapply(train_imp, function(x) {
+  is.numeric(x) && all(na.omit(x) %in% c(0, 1))
+})]
+
+# Categóricas "naturales": factor o character
+cat_base_raw <- names(train_imp)[sapply(train_imp, function(x) {
+  is.factor(x) || is.character(x)
+})]
+
+
+# Excluir IDs y texto largo (títulos / descripciones)
+cat_base <- setdiff(
+  cat_base_raw,
+  c("property_id",
+    "title", "title_norm",
+    "description", "desc_norm",
+    "titulo", "descripcion",
+    "year","city")  
+)
+
+cat_base <- cat_base[!grepl("title|desc", cat_base)]
+
+cat_base <- cat_base[sapply(train_imp[cat_base], function(x) {
+  dplyr::n_distinct(x, na.rm = TRUE) <= 10
+})]
+
+#Unimos las bases
+cat_cols <- union(cat_base, dummy_cols)
+
+# Función para construir tabla de categóricas por base
+tabla_categoricas <- function(df, base_name){
+  df %>%
+    select(all_of(cat_cols)) %>%
+    mutate(across(everything(), as.character)) %>%   # todo a texto
+    pivot_longer(
+      cols      = everything(),
+      names_to  = "variable",
+      values_to = "categoria"
+    ) %>%
+    group_by(variable, categoria) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    group_by(variable) %>%
+    mutate(prop = round(100 * n / sum(n), 1)) %>%
+    ungroup() %>%
+    mutate(Base = base_name)
+}
+
+
+# Tablas Train y Test
+tab_train_cat <- tabla_categoricas(train_imp, "Train")
+tab_test_cat  <- tabla_categoricas(test_imp,  "Test")
+
+# Tabla final ordenada para exportar
+tabla_categorica_final <- bind_rows(tab_train_cat, tab_test_cat) %>%
+  select(Base, variable, categoria, n, prop)
+
+#Convertimos las variables a LaTeX
+tabla_categorica_final_latex <- tabla_categorica_final %>%
+  mutate(
+    variable  = paste0("\\verb|", variable, "|"),
+    categoria = paste0("\\verb|", categoria, "|")
+  )
+
+#Exportar a LaTeX
+print(
+  xtable(
+    tabla_categorica_final_latex,
+    caption = "Variables categóricas en las bases \\textit{Train} y \\textit{Test}.",
+    label = "tab:variables_categoricas",
+    align = c("l","l","l","l","r","r")
+  ),
+  include.rownames = FALSE,
+  sanitize.text.function = identity
+)
+
