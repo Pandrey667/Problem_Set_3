@@ -499,6 +499,7 @@ summary_table <- lapply(names(results_list), function(nm){
 
 cat("\n===== COMPARATIVA FINAL (HOLDOUT) =====\n")
 print(summary_table)
+<<<<<<< HEAD
 
 
 # segunda parte
@@ -1150,3 +1151,5 @@ print(summary_table)
 best_model_name <- summary_table$model[which.min(summary_table$RMSE)]
 cat("Mejor variante por RMSE (holdout):", best_model_name, "\n")
 
+=======
+>>>>>>> origin/YennyC
