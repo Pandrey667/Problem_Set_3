@@ -9,15 +9,20 @@ Este repositorio presenta el desarrollo completo del Problem Set 3, cuyo objetiv
 
 - **document/**: Contiene el PDF final con introducción, datos, modelos, resultados y conclusiones.
 - **scripts/**: Incluye los códigos fuente en R organizados por etapas del proceso. Se recomienda ejecutarlos en el siguiente orden:
- 1. `1.Training.R` - Preprocesamiento del conjunto de entrenamiento
- 2. `1.testing.R` - Preprocesamiento del conjunto de prueba
- 3. `2.Modelo de predicción ganador.R` - Entrenamiento detallado del modelo ganador
- 4. `2.Modelos-de-prediccion-parte 1.R` - Modelo logit con selección automática de variables
- 5. `2.Modelos-de-prediccion-parte 2.R` - Implementación de múltiples modelos (Elastic Net, Árboles, Bagging)
- 6. `2.Modelos-de-prediccion-parte 3.R` - Modelo logit simple.
+ 1. `1.Limpieza de Training.R` - Preprocesamiento del conjunto de entrenamiento
+ 2. `1.Limpieza de Testing.R` - Preprocesamiento del conjunto de prueba
+ 3. `2.Estadisticas Descriptivas.R` - Analisis de estadistica Descriptiva
+ 4. `3. XGBoost_Modelo Ganador.R` - Entrenamiento detallado del modelo ganador
+Otros Modelos
+ 5. `3. CART.R`
+ 6. `3. OLS-Ridge`
+ 7. `3. RF , CART , XGBost , Red Neuronal`
+ 8. `3. RF , GMB , Super Learner`
+ 9. `3. 3.Elastic Net, Random Forest y XG Boost con VC Espacial`
 
-- **stores/**: Archivos CSV con los conjuntos de datos de entrenamiento y prueba. Ademas de 
-- **views/**: Visualizaciones: mapas de precios, dispersiones, ranking de variables por importancia y métricas.
+
+- **stores/**: Archivos CSV con los conjuntos de datos de entrenamiento y prueba. Ademas los datos de fuentes externas de Datos Abiertos Bogota y el ShapeFile de coordenadas. 
+- **views/**: Visualizaciones: Mapas y diagramas de barras de mediciones de MAE. 
 
 ## Modelos Implementados
 
@@ -25,7 +30,7 @@ Se compararon múltiples estrategias de modelado y validación:
 - **XGBoost** (modelo ganador): validación cruzada en dos etapas (aleatoria y espacial), destaca por su robustez y menor MAE.
 - **Random Forest** y **Elastic Net**: muestran desempeño competitivo, especialmente con validación espacial.
 - **Ridge y CART**: útiles para comparar linealidades y efectos de regularización.
-- **GBM, Red Neuronal MLP y SuperLearner**: permiten contrastar el poder predictivo de ensamblajes y redes poco profundas frente a métodos de árboles optimizados.
+- **Gradient Boosting Machine , Red Neuronal MLP y SuperLearner**: permiten contrastar el poder predictivo de ensamblajes y redes poco profundas frente a métodos de árboles optimizados.
 
 Las métricas principales incluyen **MAE**, **RMSE** y desempeño en Kaggle (evaluando error fuera de muestra y generalización).
 
