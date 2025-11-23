@@ -338,4 +338,73 @@ write.csv(submission_xgb, "Boosting(XGBoost)YC.csv", row.names = FALSE)
 
 #Visualizamos una parte de los datos
 head(submission_xgb)
+#ELASTIC NET
+# Folds espaciales: cada cluster5 es una "zona" distinta de Bogotá
+foldid_en <- base_train_df$cluster5
+
+# Grid de alphas (mezcla Ridge/Lasso)
+alpha_grid_en <- seq(0.1, 0.9, by = 0.2)  # 0.1, 0.3, 0.5, 0.7, 0.9
+
+# Validación cruzada ESPACIAL optimizando MAE (en log_price)
+results_cv_en <- purrr::map_df(alpha_grid_en, function(a) {
+  cv_fit <- cv.glmnet(
+    X_train_mat, y_vec,
+    alpha        = a,
+    family       = "gaussian",
+    foldid       = foldid_en,   # <- CV espacial por cluster5
+    nlambda      = 40,
+    type.measure = "mae"        # MAE (en log_price)
+  )
+  
+  tibble(
+    alpha       = a,
+    lambda_min  = cv_fit$lambda.min,
+    lambda_1se  = cv_fit$lambda.1se,
+    cv_mae_min  = min(cv_fit$cvm),
+    cv_mae_1se  = cv_fit$cvm[cv_fit$lambda == cv_fit$lambda.1se]
+  )
+})
+
+# Revisas cómo le fue a cada alpha
+print(results_cv_en)
+
+# Elegimos el alpha / lambda con menor MAE
+
+library(dplyr)
+
+best_row_en <- results_cv_en[order(results_cv_en$cv_mae_min), ][1, , drop = FALSE]
+best_row_en
+
+best_alpha_en  <- best_row_en$alpha
+best_lambda_en <- best_row_en$lambda_min
+
+best_alpha_en 
+best_lambda_en
+
+# Entrenamos Elastic Net final con TODOS los datos de entrenamiento
+modelo_en <- glmnet(
+  X_train_mat,
+  y_vec,
+  alpha  = best_alpha_en,
+  lambda = best_lambda_en,
+  family = "gaussian"
+)
+
+# Predicciones en el test (df_def_testeo)
+pred_log_en <- predict(modelo_en, newx = X_test_mat)
+pred_log_en <- as.numeric(pred_log_en)
+
+# Volvemos a pesos (COP) y redondeamos a miles
+pred_price_en <- exp(pred_log_en)
+pred_price_en <- round(pred_price_en, -3)
+
+# Armamos submission con la base test RDS (que ya está alineada con Kaggle)
+submission_en <- data.frame(
+  property_id = base_test_df$property_id,
+  price       = pred_price_en
+)
+
+# Guardamos CSV para Kaggle
+write.csv(submission_en, "ElasticNet_YC_dfdef.csv", row.names = FALSE)
+
 
