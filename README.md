@@ -1,9 +1,9 @@
-# Taller 3: Predicción de Precios de Vivienda en Chapinero
+# Problem Set 3: Making Money with ML?
 
 **Equipo:** Yenny Castillo, Fabian Vidal, Andrey Rincón, Carlos Alape  
 **Universidad de los Andes – Maestría en Economía**
 
-Este repositorio presenta el desarrollo completo del Taller 3 de Big Data y Machine Learning, cuyo objetivo es construir y comparar modelos predictivos para estimar el precio de oferta de viviendas en la zona de Chapinero, Bogotá. El proyecto emplea información de Properati enriquecida con fuentes externas para asegurar la robustez de los resultados y la relevancia de las recomendaciones para aplicaciones reales en el mercado inmobiliario.
+Este repositorio presenta el desarrollo completo del Problem Set 3, cuyo objetivo es construir y comparar modelos predictivos para estimar el precio de oferta de viviendas en la zona de Chapinero, Bogotá. El proyecto emplea información de Properati enriquecida con fuentes externas para asegurar la robustez de los resultados y la relevancia de las recomendaciones para aplicaciones reales en el mercado inmobiliario.
 
 ## Estructura del Repositorio
 
@@ -36,12 +36,10 @@ Las métricas principales incluyen **MAE**, **RMSE** y desempeño en Kaggle (eva
 | OLS-Ridge             | 205,171,801     | 287,731,542   | 265,571,420     |
 | CART                  | 205,171,801     | 287,731,542   | 248,255,420     |
 | Random Forest         | 146,052,767     | 193,585,019   | 247,039,507     |
-| GBM                   | 152,493,262     | 212,582,468   | 222,057,769     |
+| Gradient Boosting Machine                | 152,493,262     | 212,582,468   | 222,057,769     |
 | SuperLearner          | 141,946,030     | 195,582,202   | 260,196,139     |
 | Elastic Net           | 172,837,162     | 251,996,502   | 254,519,525     |
-| Random Forest II      | 105,269,292     | 161,806,388   | 221,402,452     |
-| Random Forest         | 101,228,886     | 162,352,357   | 218,810,463     |
-| XGBoost III           | 88,718,772      | 151,890,281   | 197,143,738     |
+| Random Forest CV espacial       | 101,228,886     | 162,352,357   | 218,810,463     |
 | XGBoost II            | 98,704,429      | 155,788,519   | 188,895,296     |
 | **XGBoost ganador**   | 149,832,428     | 219,633,506   | **186,141,249** |
 
@@ -54,6 +52,3 @@ Las métricas principales incluyen **MAE**, **RMSE** y desempeño en Kaggle (eva
 - Las variables más relevantes fueron el área del inmueble, longitud y latitud, interacción área-estrato, número de habitaciones y baños, y medidas de accesibilidad urbana (distancias a servicios).
 - Incorporar fuentes externas (OpenStreetMap, criminalidad, estrato) y realizar una ingeniería de variables es esencial para aumentar la precisión y robustez del modelo.
 - El enfoque es replicable y puede actualizarse periódicamente para reflejar cambios de mercado y mejorar la utilidad práctica de la predicción.
-
-
-> Visualiza este archivo en VS Code, usando la atajo de teclado `Ctrl+Shift+V` (Windows/Linux) o `Cmd+Shift+V` (Mac), o activa la vista previa lateral desde el menú superior: **Ver → Vista previa Markdown**.
