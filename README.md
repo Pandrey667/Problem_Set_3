@@ -10,9 +10,10 @@ Este repositorio presenta el desarrollo completo del Problem Set 3, cuyo objetiv
 - **document/**: Contiene el PDF final con introducción, datos, modelos, resultados y conclusiones.
 - **scripts/**: Incluye los códigos fuente en R organizados por etapas del proceso. Se recomienda ejecutarlos en el siguiente orden:
  1. `1.Limpieza de Training.R` - Preprocesamiento del conjunto de entrenamiento
- 2. `1.Limpieza de Testing.R` - Preprocesamiento del conjunto de prueba
- 3. `2.Estadisticas Descriptivas.R` - Analisis de estadistica Descriptiva
- 4. `3. XGBoost_Modelo Ganador.R` - Entrenamiento detallado del modelo ganador
+ 2. `1.Unificacion Manzanas Barrios Estratos.R` - Unión de base principal con bases de datos externos de Datos Abiertos Bogotá
+ 3. `1.Limpieza de Testing.R` - Preprocesamiento del conjunto de prueba
+ 4. `2.Estadisticas Descriptivas.R` - Analisis de estadistica Descriptiva
+ 5. `3. XGBoost_Modelo Ganador.R` - Entrenamiento detallado del modelo ganador
 Otros Modelos
  5. `3. CART.R`
  6. `3. OLS-Ridge`
